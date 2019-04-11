@@ -5,9 +5,14 @@ Gists are simple way to share small programs and they are even simpler to includ
 I am planning to write technical blog posts and intend to include gist as and when necessary. To make my life easier (and yours, if it resonates with you), this is a smalll program, which can create individual gists easily with just a simple command.
 
 Usage:
-* Create Github access token. Go to: https://github.com/settings/tokens, click "Generate New Token", select gist
-* Set environment variable GISTIFY_TOKEN with the generated token.
-  For example, on MacOS, Linux: `$ export GISTIFY_TOKEN="..."`
+* Download `gistify` <br>
+`$ go get github.com/sahajre/gistify`
+* Create Github access token. <br>
+Go to: https://github.com/settings/tokens <br>
+click "Generate New Token" <br>
+select gist and save <br>
+* Set environment variable `GISTIFY_TOKEN` with the generated token.<br>
+`$ export GISTIFY_TOKEN="..."`<br>
 * Change to target directory
-* Execute `gistify` command.
-  For example, `$ gistify ".*.go"`
+* Execute `gistify` command. <br>
+`$ gistify ".*.go"`

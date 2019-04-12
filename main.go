@@ -63,10 +63,9 @@ func searchAndfilterFiles(searchDir, searchPattern string) ([]string, error) {
 		return nil, fmt.Errorf("ERROR: could not search files in dir %s: %v", searchDir, err)
 	}
 
-	srchPtrn := os.Args[1] //Example: ".*.go"
-	r, err := regexp.Compile(srchPtrn)
+	r, err := regexp.Compile(searchPattern)
 	if err != nil {
-		return nil, fmt.Errorf("could not compile given regex %s: %v", srchPtrn, err)
+		return nil, fmt.Errorf("could not compile given regex %s: %v", searchPattern, err)
 	}
 
 	var inputFiles []string
@@ -194,7 +193,6 @@ func main() {
 	}
 
 	flag.Parse()
-	fmt.Println(*isPublic)
 
 	pattern := flag.Args()
 	if len(pattern) == 0 {
@@ -202,19 +200,18 @@ func main() {
 		return
 	}
 
-	const metadataFile = ".gistify"
-
 	token, err := getGithubToken()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	filepaths, err := searchAndfilterFiles(".", os.Args[1])
+	filepaths, err := searchAndfilterFiles(".", pattern[0])
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("Files to be processed: %d\n", len(filepaths))
 
+	const metadataFile = ".gistify"
 	metadata, err := readMetadata(metadataFile)
 	if err != nil {
 		log.Fatal(err)

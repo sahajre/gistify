@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -15,7 +16,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-type gistinfo struct {
+type gistMetadata struct {
 	ID  string `json:",omitempty"`
 	URL string `json:",omitempty"`
 
@@ -35,34 +36,26 @@ func visit(files *[]string) filepath.WalkFunc {
 	}
 }
 
-// const version = "0.0.1"
-// const usage = `usage:
-// gistify [-dry-run] [pattern]
-// Note: Set GISTFY_TOKEN environment variable`
-const gistifyFile = ".gistify"
-
-func main() {
+func getGithubToken() (string, error) {
 	token := os.Getenv("GISTIFY_TOKEN")
 	if len(token) == 0 {
-		log.Fatal("ERROR: could not find GISTIFY_TOKEN environment variable set")
+		return "", errors.New("ERROR: could not find GISTIFY_TOKEN environment variable set")
 	}
 
-	searchDir := "."
+	return token, nil
+}
+
+func searchAndfilterFiles(searchDir, searchPattern string) ([]string, error) {
 	var files []string
 	err := filepath.Walk(searchDir, visit(&files))
 	if err != nil {
-		log.Fatalf("ERROR: could not search files in dir %s: %v", searchDir, err)
+		return nil, fmt.Errorf("ERROR: could not search files in dir %s: %v", searchDir, err)
 	}
 
 	srchPtrn := os.Args[1] //Example: ".*.go"
 	r, err := regexp.Compile(srchPtrn)
 	if err != nil {
-		log.Fatalf("could not compile given regex %s: %v", srchPtrn, err)
-	}
-
-	info, err := readGistifyInfo()
-	if err != nil {
-		log.Fatalf("could not read gistinfo file %s: %v", gistifyFile, err)
+		return nil, fmt.Errorf("could not compile given regex %s: %v", srchPtrn, err)
 	}
 
 	var inputFiles []string
@@ -71,85 +64,26 @@ func main() {
 			inputFiles = append(inputFiles, file)
 		}
 	}
-	fmt.Printf("Files to be processed: %d\n", len(inputFiles))
 
-	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
-	httpClient := oauth2.NewClient(context.Background(), tokenSource)
-	client := github.NewClient(httpClient)
-
-	currentUser, _, err := client.Users.Get(context.TODO(), "")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for _, file := range inputFiles {
-		f, err := os.Stat(file)
-		if err != nil {
-			continue
-		}
-
-		fcontent, err := ioutil.ReadFile(file)
-		if err != nil {
-			log.Fatal("could not access file %s : %v", file, err)
-		} else {
-			fcontent := string(fcontent)
-			if len(fcontent) == 0 {
-				continue
-			}
-
-			filename := filepath.Base(file)
-			newFile := true
-			ginfo, exists := info[file]
-			if exists {
-				currMod := f.ModTime().Unix()
-				if ginfo.Lastmod == currMod {
-					fmt.Println("Skipping (file unchanged):", file)
-					continue
-				}
-				newFile = false
-			}
-			gist := &github.Gist{}
-			gist.Owner = currentUser
-			gist.Description = github.String("")
-			gist.Public = github.Bool(false)
-			gist.Files = map[github.GistFilename]github.GistFile{}
-
-			gist.Files[github.GistFilename(filename)] = github.GistFile{
-				Content: github.String(fcontent),
-			}
-
-			if newFile {
-				result, _, err := client.Gists.Create(context.TODO(), gist)
-				if err != nil {
-					log.Fatal(err)
-				}
-				info[file] = &gistinfo{ID: *result.ID, URL: *result.HTMLURL, Lastmod: f.ModTime().Unix(), Public: false, Filename: file}
-
-				fmt.Println("Creating gist:", file+":", *result.HTMLURL)
-			} else {
-				_, _, err := client.Gists.Edit(context.TODO(), ginfo.ID, gist)
-				if err != nil {
-					log.Fatal(err)
-				}
-				info[file] = &gistinfo{ID: ginfo.ID, URL: ginfo.URL, Lastmod: f.ModTime().Unix(), Public: false, Filename: file}
-
-				fmt.Println("Updating gist:", file+":", ginfo.URL)
-			}
-
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-	}
-
-	_, err = saveGistifyInfo(info)
-	if err != nil {
-		log.Fatalf("could not save gistify file %s: %v", gistifyFile, err)
-	}
+	return inputFiles, nil
 }
 
-func saveGistifyInfo(info map[string]*gistinfo) (bool, error) {
-	f, err := os.Create(gistifyFile)
+func newGist(currentUser *github.User, decription string, public bool, filename, content string) *github.Gist {
+	gist := &github.Gist{}
+	gist.Owner = currentUser
+	gist.Description = github.String("")
+	gist.Public = github.Bool(false)
+	gist.Files = map[github.GistFilename]github.GistFile{}
+
+	gist.Files[github.GistFilename(filename)] = github.GistFile{
+		Content: github.String(content),
+	}
+
+	return gist
+}
+
+func writeMetadata(metadataFile string, info map[string]*gistMetadata) (bool, error) {
+	f, err := os.Create(metadataFile)
 	if err != nil {
 		return false, err
 	}
@@ -168,15 +102,15 @@ func saveGistifyInfo(info map[string]*gistinfo) (bool, error) {
 	return true, err
 }
 
-func readGistifyInfo() (map[string]*gistinfo, error) {
-	var info map[string]*gistinfo
-	info = make(map[string]*gistinfo)
+func readMetadata(metadataFile string) (map[string]*gistMetadata, error) {
+	var info map[string]*gistMetadata
+	info = make(map[string]*gistMetadata)
 
-	if _, err := os.Stat(gistifyFile); os.IsNotExist(err) {
+	if _, err := os.Stat(metadataFile); os.IsNotExist(err) {
 		return info, nil
 	}
 
-	f, err := os.Open(gistifyFile)
+	f, err := os.Open(metadataFile)
 	if err != nil {
 		return info, err
 	}
@@ -185,4 +119,88 @@ func readGistifyInfo() (map[string]*gistinfo, error) {
 	err = json.NewDecoder(bufio.NewReader(f)).Decode(&info)
 
 	return info, err
+}
+
+func main() {
+	const metadataFile = ".gistify"
+
+	token, err := getGithubToken()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	filepaths, err := searchAndfilterFiles(".", os.Args[1])
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Files to be processed: %d\n", len(filepaths))
+
+	metadata, err := readMetadata(metadataFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+	httpClient := oauth2.NewClient(context.Background(), tokenSource)
+	client := github.NewClient(httpClient)
+	currUser, _, err := client.Users.Get(context.TODO(), "")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, relpath := range filepaths {
+		f, err := os.Stat(relpath)
+		if err != nil {
+			continue
+		}
+
+		content, err := ioutil.ReadFile(relpath)
+		if err != nil {
+			log.Fatal("could not access file %s : %v", relpath, err)
+		} else {
+			content := string(content)
+			if len(content) == 0 {
+				fmt.Println("Skipping (no content):", relpath)
+				continue
+			}
+
+			filename := filepath.Base(relpath)
+			newFile := true
+			gistMeta, exists := metadata[relpath]
+			if exists {
+				currMod := f.ModTime().Unix()
+				if gistMeta.Lastmod == currMod {
+					fmt.Println("Skipping (file unchanged):", relpath)
+					continue
+				}
+				newFile = false
+			}
+			gist := newGist(currUser, "", false, filename, content)
+
+			if newFile {
+				result, _, err := client.Gists.Create(context.TODO(), gist)
+				if err != nil {
+					log.Fatal(err)
+				}
+				metadata[relpath] = &gistMetadata{ID: *result.ID, URL: *result.HTMLURL, Lastmod: f.ModTime().Unix(), Public: false, Filename: relpath}
+				fmt.Println("Creating gist:", relpath+":", *result.HTMLURL)
+			} else {
+				_, _, err := client.Gists.Edit(context.TODO(), gistMeta.ID, gist)
+				if err != nil {
+					log.Fatal(err)
+				}
+				metadata[relpath] = &gistMetadata{ID: gistMeta.ID, URL: gistMeta.URL, Lastmod: f.ModTime().Unix(), Public: false, Filename: relpath}
+				fmt.Println("Updating gist:", relpath+":", gistMeta.URL)
+			}
+
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
+
+	_, err = writeMetadata(metadataFile, metadata)
+	if err != nil {
+		log.Fatalf("could not save gistify metadata file %s: %v", metadataFile, err)
+	}
 }

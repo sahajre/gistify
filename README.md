@@ -16,3 +16,5 @@ select gist and save <br>
 * Change to target directory
 * Execute `gistify` command. <br>
 `$ gistify ".*.go"`
+* Now, all the matching files will be available as an individual gist and the gist URL will be shown in the output.
+* On subsequent run, the files which are not updated will be skipped. For updated files, the gist created earlier will get updated. For new files, new gist will be created.

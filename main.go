@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -25,6 +27,15 @@ type gistMetadata struct {
 	Public   bool
 }
 
+func newGistMetadata(id, url string, modTime int64, isPublic bool, relpath string) *gistMetadata {
+	return &gistMetadata{
+		ID:       id,
+		URL:      url,
+		Lastmod:  modTime,
+		Public:   isPublic,
+		Filename: relpath,
+	}
+}
 func visit(files *[]string) filepath.WalkFunc {
 	return func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -72,7 +83,7 @@ func newGist(currentUser *github.User, decription string, public bool, filename,
 	gist := &github.Gist{}
 	gist.Owner = currentUser
 	gist.Description = github.String("")
-	gist.Public = github.Bool(false)
+	gist.Public = github.Bool(public)
 	gist.Files = map[github.GistFilename]github.GistFile{}
 
 	gist.Files[github.GistFilename(filename)] = github.GistFile{
@@ -121,7 +132,76 @@ func readMetadata(metadataFile string) (map[string]*gistMetadata, error) {
 	return info, err
 }
 
+type gistStatus int
+
+const (
+	gistCreated gistStatus = iota
+	gistRecreated
+	gistUpdated
+	gistFailed
+)
+
+func (s gistStatus) String() string {
+	switch s {
+	case gistCreated:
+		return "Created  "
+	case gistRecreated:
+		return "Recreated"
+	case gistUpdated:
+		return "Updated  "
+	case gistFailed:
+		return "Failed   "
+	default:
+		return "Status?  "
+	}
+}
+
+func processGist(id string, gist *github.Gist, client *github.Client) (*github.Gist, gistStatus, error) {
+	if len(id) == 0 {
+		g, _, err := client.Gists.Create(context.TODO(), gist)
+		if err != nil {
+			return nil, gistFailed, err
+		}
+
+		return g, gistCreated, nil
+	}
+
+	g, r, err := client.Gists.Edit(context.TODO(), id, gist)
+	if err != nil {
+		if r.StatusCode != http.StatusNotFound {
+			return nil, gistFailed, err
+		}
+
+		g, _, err := client.Gists.Create(context.TODO(), gist)
+		if err != nil {
+			return nil, gistFailed, err
+		}
+		return g, gistRecreated, nil
+	}
+
+	return g, gistUpdated, nil
+
+}
+
 func main() {
+	isPublic := flag.Bool("public", false, "sets visibility to public")
+
+	flag.Usage = func() {
+		var CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+		fmt.Fprintf(CommandLine.Output(), "Usage of %s: %s [options] <pattern>\n", os.Args[0], os.Args[0])
+		fmt.Println("Options:")
+		flag.PrintDefaults()
+	}
+
+	flag.Parse()
+	fmt.Println(*isPublic)
+
+	pattern := flag.Args()
+	if len(pattern) == 0 {
+		flag.Usage()
+		return
+	}
+
 	const metadataFile = ".gistify"
 
 	token, err := getGithubToken()
@@ -154,49 +234,37 @@ func main() {
 			continue
 		}
 
-		content, err := ioutil.ReadFile(relpath)
+		bcontent, err := ioutil.ReadFile(relpath)
 		if err != nil {
 			log.Fatal("could not access file %s : %v", relpath, err)
-		} else {
-			content := string(content)
-			if len(content) == 0 {
-				fmt.Println("Skipping (no content):", relpath)
+		}
+		content := string(bcontent)
+		if len(content) == 0 {
+			fmt.Println("Skipping (no content):", relpath)
+			continue
+		}
+
+		id := ""
+		modTime := f.ModTime().Unix()
+		gistMeta, exists := metadata[relpath]
+
+		if exists {
+			if gistMeta.Lastmod == modTime {
+				fmt.Println("Skipping ", gistMeta.URL, relpath, "(file unchanged)")
 				continue
 			}
-
-			filename := filepath.Base(relpath)
-			newFile := true
-			gistMeta, exists := metadata[relpath]
-			if exists {
-				currMod := f.ModTime().Unix()
-				if gistMeta.Lastmod == currMod {
-					fmt.Println("Skipping (file unchanged):", relpath)
-					continue
-				}
-				newFile = false
-			}
-			gist := newGist(currUser, "", false, filename, content)
-
-			if newFile {
-				result, _, err := client.Gists.Create(context.TODO(), gist)
-				if err != nil {
-					log.Fatal(err)
-				}
-				metadata[relpath] = &gistMetadata{ID: *result.ID, URL: *result.HTMLURL, Lastmod: f.ModTime().Unix(), Public: false, Filename: relpath}
-				fmt.Println("Creating gist:", relpath+":", *result.HTMLURL)
-			} else {
-				_, _, err := client.Gists.Edit(context.TODO(), gistMeta.ID, gist)
-				if err != nil {
-					log.Fatal(err)
-				}
-				metadata[relpath] = &gistMetadata{ID: gistMeta.ID, URL: gistMeta.URL, Lastmod: f.ModTime().Unix(), Public: false, Filename: relpath}
-				fmt.Println("Updating gist:", relpath+":", gistMeta.URL)
-			}
-
-			if err != nil {
-				log.Fatal(err)
-			}
+			id = gistMeta.ID
 		}
+
+		gist := newGist(currUser, "", *isPublic, filepath.Base(relpath), content)
+		result, status, err := processGist(id, gist, client)
+		fmt.Println("" + status.String() + " " + *result.HTMLURL + " for file " + relpath)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		metadata[relpath] = newGistMetadata(*result.ID, *result.HTMLURL, modTime, *isPublic, relpath)
+
 	}
 
 	_, err = writeMetadata(metadataFile, metadata)

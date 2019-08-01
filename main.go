@@ -233,7 +233,8 @@ func main() {
 
 		bcontent, err := ioutil.ReadFile(relpath)
 		if err != nil {
-			log.Fatal("could not access file %s : %v", relpath, err)
+			log.Printf("WARN: could not access file %s : %v\n", relpath, err)
+			continue
 		}
 		content := string(bcontent)
 		if len(content) == 0 {
